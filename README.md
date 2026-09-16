@@ -2,6 +2,8 @@
 
 Experiment harness for testing the H2 hypothesis under family-tagged store + κ + LRU memory. Procedural oracles only — no real model results yet.
 
+**Research scaffold:** [docs/H2_Research_Proposal_Scaffold_v1.3.md](docs/H2_Research_Proposal_Scaffold_v1.3.md) (cold-start c_never + Pr := P(c≤B); §6 blank / Stack-hold).
+
 ## Falsifiable Claim (Primary)
 
 > Under family-tagged store + κ + LRU, busy arms fail Stack G-D:
