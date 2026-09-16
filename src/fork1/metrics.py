@@ -37,6 +37,7 @@ class CellResult:
     n_probes: int
     n_successes: int
     pre_dormancy_mean: float
+    probe_outcomes: list[bool] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -59,6 +60,7 @@ class SMetric:
     pr_never: float
     s_value: float
     b_frozen: float
+    in_withheld_era: bool = False
 
 
 @dataclasses.dataclass
@@ -142,6 +144,7 @@ def evaluate_cell(
         n_probes=n_probes,
         n_successes=n_successes,
         pre_dormancy_mean=pre_mean,
+        probe_outcomes=list(probe_outcomes),
     )
 
 

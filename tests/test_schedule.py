@@ -84,7 +84,7 @@ class TestSchedule:
         assert has_probe
 
     def test_probe_window_after_dormancy(self) -> None:
-        pw = 5
+        pw = 2
         schedule = Schedule(families=FAMILIES, active_length=10, probe_window=pw)
         tasks = schedule.build_stream(
             arm_type=ArmType.BUSY,
@@ -97,7 +97,7 @@ class TestSchedule:
 
     def test_n_instances_respected(self) -> None:
         n = 7
-        schedule = Schedule(families=FAMILIES, active_length=10, probe_window=5)
+        schedule = Schedule(families=FAMILIES, active_length=10, probe_window=2)
         tasks = schedule.build_stream(
             arm_type=ArmType.BUSY,
             target_family="filings",
@@ -105,7 +105,7 @@ class TestSchedule:
             n_instances=n,
         )
         probe_tasks = [t for t in tasks if t.is_probe]
-        assert len(probe_tasks) == n * 5
+        assert len(probe_tasks) == n * 2
 
     def test_unknown_family_raises(self) -> None:
         schedule = Schedule(families=FAMILIES)
@@ -118,7 +118,7 @@ class TestSchedule:
             )
 
     def test_d0_busy_has_no_dormancy_gap(self) -> None:
-        schedule = Schedule(families=FAMILIES, active_length=10, probe_window=5)
+        schedule = Schedule(families=FAMILIES, active_length=10, probe_window=2)
         tasks = schedule.build_stream(
             arm_type=ArmType.BUSY,
             target_family="earnings",
@@ -136,6 +136,11 @@ class TestSchedule:
         assert "earnings" in FAMILIES
         assert "crisis" in FAMILIES
         assert "filings" in FAMILIES
+
+    def test_probe_window_default_is_w2(self) -> None:
+        """Stack froze w=2. Default probe_window must be 2, not 5."""
+        schedule = Schedule(families=FAMILIES)
+        assert schedule.probe_window == 2
 
 
 class TestArmType:

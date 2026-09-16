@@ -38,6 +38,8 @@ KAPPA_VALUES = (0.25, 0.50, 1.00)
 N_INSTANCES = 70
 N_SEEDS = 8
 MEMORY_CAPACITY = 100
+PILOT_INSTANCES = 30
+PILOT_SEEDS = 4
 
 
 @dataclasses.dataclass
@@ -50,8 +52,10 @@ class GridConfig:
     n_seeds: int = N_SEEDS
     memory_capacity: int = MEMORY_CAPACITY
     active_length: int = 20
-    probe_window: int = 5
+    probe_window: int = 2
     min_dormancy_before_probe: int = 10
+    pilot_instances: int = PILOT_INSTANCES
+    pilot_seeds: int = PILOT_SEEDS
 
 
 @dataclasses.dataclass
@@ -153,6 +157,44 @@ def run_single_cell(
     )
 
 
+def run_pilot_c_never(config: GridConfig, adapter: ModelAdapterStub) -> float:
+    """Estimate c_never ONCE from a frozen pilot ceiling.
+
+    Runs never-learned arms on a reduced grid (pilot_seeds × pilot_instances)
+    across all families and κ values. The result is locked — no per-cell or
+    post-hoc re-fit of B.
+    """
+    pilot_config = GridConfig(
+        dormancy_values=config.dormancy_values,
+        kappa_values=config.kappa_values,
+        families=config.families,
+        n_instances=config.pilot_instances,
+        n_seeds=config.pilot_seeds,
+        memory_capacity=config.memory_capacity,
+        active_length=config.active_length,
+        probe_window=config.probe_window,
+        min_dormancy_before_probe=config.min_dormancy_before_probe,
+        pilot_instances=config.pilot_instances,
+        pilot_seeds=config.pilot_seeds,
+    )
+    pilot_results: list[CellResult] = []
+    for seed in range(pilot_config.n_seeds):
+        for family in pilot_config.families:
+            for kappa in pilot_config.kappa_values:
+                result = run_single_cell(
+                    family=family,
+                    arm_type=ArmType.NEVER_LEARNED,
+                    d=0,
+                    kappa=kappa,
+                    seed=seed,
+                    config=pilot_config,
+                    adapter=adapter,
+                )
+                pilot_results.append(result)
+
+    return estimate_c_never(pilot_results)
+
+
 def run_grid(config: Optional[GridConfig] = None) -> GridOutput:
     """Run the full frozen grid experiment."""
     if config is None:
@@ -160,7 +202,9 @@ def run_grid(config: Optional[GridConfig] = None) -> GridOutput:
 
     adapter = ModelAdapterStub()
     all_results: list[CellResult] = []
-    never_learned_results: list[CellResult] = []
+
+    c_never = run_pilot_c_never(config, adapter)
+    b_frozen = freeze_b(c_never)
 
     arm_types_to_run = [ArmType.BUSY, ArmType.IDLE, ArmType.NEVER_LEARNED, ArmType.DELETION]
 
@@ -183,11 +227,9 @@ def run_grid(config: Optional[GridConfig] = None) -> GridOutput:
                         )
                         all_results.append(result)
 
-                        if arm_type == ArmType.NEVER_LEARNED:
-                            never_learned_results.append(result)
-
-    c_never = estimate_c_never(never_learned_results) if never_learned_results else 1.0
-    b_frozen = freeze_b(c_never)
+    never_learned_results = [
+        r for r in all_results if r.arm_type == ArmType.NEVER_LEARNED
+    ]
 
     results_by_d: dict[int, list[CellResult]] = {}
     for r in all_results:
@@ -234,8 +276,16 @@ def run_grid(config: Optional[GridConfig] = None) -> GridOutput:
                     and abs(r.kappa - kappa) < 1e-9
                 ]
                 if store_cells and never_cells:
-                    avg_store_pr = sum(c.pr_restore for c in store_cells) / len(store_cells)
-                    avg_never_pr = sum(c.pr_restore for c in never_cells) / len(never_cells)
+                    store_pr_vals = [
+                        compute_pr_within_b(c.probe_outcomes, b_frozen)
+                        for c in store_cells
+                    ]
+                    never_pr_vals = [
+                        compute_pr_within_b(c.probe_outcomes, b_frozen)
+                        for c in never_cells
+                    ]
+                    avg_store_pr = sum(store_pr_vals) / len(store_pr_vals)
+                    avg_never_pr = sum(never_pr_vals) / len(never_pr_vals)
                     s_metrics.append(SMetric(
                         family=family,
                         d=d,
@@ -295,6 +345,7 @@ def grid_output_to_json(output: GridOutput) -> dict[str, Any]:
             "pr_never": round(s.pr_never, 4),
             "s_value": round(s.s_value, 4),
             "b_frozen": round(s.b_frozen, 2),
+            "in_withheld_era": s.in_withheld_era,
         })
 
     return {
@@ -308,6 +359,7 @@ def grid_output_to_json(output: GridOutput) -> dict[str, Any]:
         "primary_gd": output.gd_results,
         "kappa1_flat": output.kappa1_flat,
         "c_never": round(output.c_never, 2),
+        "c_never_source": "pilot",
         "b_frozen": round(output.b_frozen, 2),
         "s_metrics": s_list,
         "censor_rates": {k: round(v, 4) for k, v in output.censor_rates.items()},

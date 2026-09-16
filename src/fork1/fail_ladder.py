@@ -3,8 +3,10 @@
 Spec fail ladder:
 1. G-D holds + κ=1 flat → proceed
 2. G-D fails → H2 kill, bounce Stack
-3. flat + S<0 under drift → harmfulness
+3. H2 flat/kill AND S<0 under drift (withheld-era partition) → harmfulness
 4. rise at κ=1 → harness bug, stop
+
+Rung-3 (harmfulness) fires ONLY when H2 is flat or killed — never when G-D holds.
 """
 
 from __future__ import annotations
@@ -37,12 +39,11 @@ def evaluate_fail_ladder(
 ) -> FailLadderDecision:
     """Evaluate the fail ladder and return the decision.
 
-    Steps:
-    1. Check G-D at κ∈{0.25, 0.50} for busy arms
-    2. Check κ=1 flat control
-    3. If G-D fails → H2 kill
-    4. If flat + S<0 under drift at κ∈{0.25,0.50} busy → harmfulness
-    5. If rise at κ=1 → harness bug
+    Steps (order matters):
+    1. Rise at κ=1 → harness bug, stop  (checked first — blocks all else)
+    2. G-D holds at tested κ + κ=1 flat → proceed
+    3. G-D fails → H2 kill; THEN check rung-3
+    4. H2 flat/kill AND S<0 under drift (withheld-era only) → harmfulness
     """
     gd_results: dict[float, GDResult] = {}
     for kappa in kappa_values:
@@ -83,42 +84,7 @@ def evaluate_fail_ladder(
     any_gd_holds = any(g.gd_holds for g in gd_results.values())
     all_gd_holds = all(g.gd_holds for g in gd_results.values()) if gd_results else False
 
-    if not any_gd_holds:
-        if kappa1_flat:
-            return FailLadderDecision(
-                step=2,
-                label=LadderOutcome.H2_KILL.value,
-                detail=(
-                    "G-D fails at all tested κ values. "
-                    f"Gaps: {_format_gaps(gd_results)}. H2 killed — bounce Stack."
-                ),
-            )
-        return FailLadderDecision(
-            step=2,
-            label=LadderOutcome.H2_KILL.value,
-            detail=(
-                "G-D fails and κ=1 control is not flat. "
-                f"Gaps: {_format_gaps(gd_results)}. H2 killed."
-            ),
-        )
-
     if kappa1_flat and all_gd_holds:
-        if s_metrics:
-            drift_s_negative = any(
-                s.s_value < 0
-                for s in s_metrics
-                if s.kappa in kappa_values
-            )
-            if drift_s_negative:
-                return FailLadderDecision(
-                    step=3,
-                    label=LadderOutcome.HARMFULNESS.value,
-                    detail=(
-                        "G-D holds + κ=1 flat, but S<0 under drift at tested κ. "
-                        "Harmfulness path triggered."
-                    ),
-                )
-
         return FailLadderDecision(
             step=1,
             label=LadderOutcome.PROCEED.value,
@@ -128,12 +94,52 @@ def evaluate_fail_ladder(
             ),
         )
 
+    if any_gd_holds and not all_gd_holds:
+        return FailLadderDecision(
+            step=1,
+            label=LadderOutcome.PROCEED.value,
+            detail=(
+                f"G-D holds at some κ ({_format_gaps(gd_results)}), "
+                f"κ=1 flat={kappa1_flat}. Partial proceed."
+            ),
+        )
+
+    h2_is_flat_or_kill = not any_gd_holds
+
+    if h2_is_flat_or_kill and s_metrics:
+        withheld_s = [s for s in s_metrics if s.in_withheld_era]
+        drift_s_negative = any(
+            s.s_value < 0
+            for s in withheld_s
+            if s.kappa in kappa_values
+        )
+        if drift_s_negative:
+            return FailLadderDecision(
+                step=3,
+                label=LadderOutcome.HARMFULNESS.value,
+                detail=(
+                    "G-D fails (H2 flat/kill) AND S<0 under drift "
+                    "in withheld-era partition at tested κ. "
+                    f"Gaps: {_format_gaps(gd_results)}. Harmfulness path triggered."
+                ),
+            )
+
+    if h2_is_flat_or_kill:
+        return FailLadderDecision(
+            step=2,
+            label=LadderOutcome.H2_KILL.value,
+            detail=(
+                "G-D fails at all tested κ values. "
+                f"Gaps: {_format_gaps(gd_results)}. κ=1 flat={kappa1_flat}. "
+                "H2 killed — bounce Stack."
+            ),
+        )
+
     return FailLadderDecision(
-        step=1,
-        label=LadderOutcome.PROCEED.value,
+        step=2,
+        label=LadderOutcome.H2_KILL.value,
         detail=(
-            f"G-D holds at some κ ({_format_gaps(gd_results)}), "
-            f"κ=1 flat={kappa1_flat}. Partial proceed."
+            f"G-D inconclusive ({_format_gaps(gd_results)}). H2 killed."
         ),
     )
 

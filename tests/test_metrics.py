@@ -248,21 +248,24 @@ class TestFailLadder:
         assert decision.label == LadderOutcome.H2_KILL.value
 
     def test_harmfulness_when_flat_and_s_negative(self) -> None:
+        """Rung-3 only fires when G-D fails (H2 flat/kill) AND S<0 in
+        withheld-era — NOT when G-D holds."""
         results_by_d = {
             0: [
-                _make_result(d=0, kappa=0.25, pr_restore=0.9),
-                _make_result(d=0, kappa=0.50, pr_restore=0.9),
+                _make_result(d=0, kappa=0.25, pr_restore=0.8),
+                _make_result(d=0, kappa=0.50, pr_restore=0.8),
                 _make_result(d=0, kappa=1.0, pr_restore=0.8),
             ],
             200: [
-                _make_result(d=200, kappa=0.25, pr_restore=0.5),
-                _make_result(d=200, kappa=0.50, pr_restore=0.5),
+                _make_result(d=200, kappa=0.25, pr_restore=0.7),
+                _make_result(d=200, kappa=0.50, pr_restore=0.7),
                 _make_result(d=200, kappa=1.0, pr_restore=0.78),
             ],
         }
         s_negative = [SMetric(
             family="earnings", d=200, kappa=0.25,
             pr_store=0.3, pr_never=0.6, s_value=-0.3, b_frozen=10.0,
+            in_withheld_era=True,
         )]
         decision = evaluate_fail_ladder(results_by_d, s_metrics=s_negative)
         assert decision.label == LadderOutcome.HARMFULNESS.value

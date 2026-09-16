@@ -71,7 +71,7 @@ class Schedule:
         families: tuple[str, ...] = FAMILIES,
         active_length: int = 20,
         dormancy_map: Optional[dict[str, int]] = None,
-        probe_window: int = 5,
+        probe_window: int = 2,
         min_dormancy_before_probe: int = 10,
     ) -> None:
         self.families = families
