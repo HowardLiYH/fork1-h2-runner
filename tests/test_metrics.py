@@ -98,52 +98,99 @@ class TestCEpisodes:
 
 class TestGDChecker:
     def test_gd_holds_when_big_gap(self) -> None:
+        """P(c≤B) drops sharply from d=0 to d=200 → G-D holds."""
+        b_frozen = 10.0
         results_by_d = {
-            0: [_make_result(d=0, kappa=0.5, pr_restore=0.9)],
-            200: [_make_result(d=200, kappa=0.5, pr_restore=0.5)],
+            0: [_make_result(d=0, kappa=0.5, c_episodes=5.0)],
+            200: [_make_result(d=200, kappa=0.5, c_episodes=50.0)],
         }
-        gd = check_gd(results_by_d, kappa=0.5)
+        gd = check_gd(results_by_d, kappa=0.5, b_frozen=b_frozen)
         assert gd.gd_holds
         assert gd.gap >= 0.25
 
     def test_gd_fails_when_small_gap(self) -> None:
+        """P(c≤B) barely changes → G-D fails."""
+        b_frozen = 10.0
         results_by_d = {
-            0: [_make_result(d=0, kappa=0.5, pr_restore=0.8)],
-            200: [_make_result(d=200, kappa=0.5, pr_restore=0.7)],
+            0: [_make_result(d=0, kappa=0.5, c_episodes=5.0)],
+            200: [_make_result(d=200, kappa=0.5, c_episodes=8.0)],
         }
-        gd = check_gd(results_by_d, kappa=0.5)
+        gd = check_gd(results_by_d, kappa=0.5, b_frozen=b_frozen)
         assert not gd.gd_holds
 
     def test_gd_uses_busy_only(self) -> None:
+        """Only BUSY arm results contribute to the G-D check."""
+        b_frozen = 10.0
         results_by_d = {
             0: [
-                _make_result(d=0, kappa=0.5, pr_restore=0.9, arm_type=ArmType.BUSY),
-                _make_result(d=0, kappa=0.5, pr_restore=0.1, arm_type=ArmType.IDLE),
+                _make_result(d=0, kappa=0.5, c_episodes=5.0, arm_type=ArmType.BUSY),
+                _make_result(d=0, kappa=0.5, c_episodes=50.0, arm_type=ArmType.IDLE),
             ],
             200: [
-                _make_result(d=200, kappa=0.5, pr_restore=0.5, arm_type=ArmType.BUSY),
-                _make_result(d=200, kappa=0.5, pr_restore=0.9, arm_type=ArmType.IDLE),
+                _make_result(d=200, kappa=0.5, c_episodes=50.0, arm_type=ArmType.BUSY),
+                _make_result(d=200, kappa=0.5, c_episodes=5.0, arm_type=ArmType.IDLE),
             ],
         }
-        gd = check_gd(results_by_d, kappa=0.5)
-        assert gd.pr_d0 == 0.9
-        assert gd.pr_d200 == 0.5
+        gd = check_gd(results_by_d, kappa=0.5, b_frozen=b_frozen)
+        assert gd.pr_d0 == 1.0
+        assert gd.pr_d200 == 0.0
+
+    def test_gd_uses_p_c_leq_b_not_pr_restore(self) -> None:
+        """P0-4: G-D must use P(c≤B) from c_episodes, NOT pr_restore.
+
+        Construct a case where pr_restore would say 'holds' but P(c≤B) says
+        'fails' — verify G-D uses the latter.
+        """
+        b_frozen = 10.0
+        results_by_d = {
+            0: [_make_result(d=0, kappa=0.5, pr_restore=0.9, c_episodes=5.0)],
+            200: [_make_result(d=200, kappa=0.5, pr_restore=0.5, c_episodes=8.0)],
+        }
+        gd = check_gd(results_by_d, kappa=0.5, b_frozen=b_frozen)
+        assert gd.pr_d0 == 1.0
+        assert gd.pr_d200 == 1.0
+        assert not gd.gd_holds
+
+    def test_gd_has_diagnostic_probe_mean(self) -> None:
+        """G-D result includes diagnostic probe-window means."""
+        b_frozen = 10.0
+        results_by_d = {
+            0: [_make_result(d=0, kappa=0.5, pr_restore=0.9, c_episodes=5.0)],
+            200: [_make_result(d=200, kappa=0.5, pr_restore=0.5, c_episodes=50.0)],
+        }
+        gd = check_gd(results_by_d, kappa=0.5, b_frozen=b_frozen)
+        assert gd.probe_mean_d0 == 0.9
+        assert gd.probe_mean_d200 == 0.5
 
 
 class TestKappa1Flat:
     def test_flat_when_no_gap(self) -> None:
+        """κ=1 flat when P(c≤B) doesn't drop at d=200."""
+        b_frozen = 10.0
         results_by_d = {
-            0: [_make_result(d=0, kappa=1.0, pr_restore=0.8)],
-            200: [_make_result(d=200, kappa=1.0, pr_restore=0.78)],
+            0: [_make_result(d=0, kappa=1.0, c_episodes=5.0)],
+            200: [_make_result(d=200, kappa=1.0, c_episodes=6.0)],
         }
-        assert check_kappa1_flat(results_by_d)
+        assert check_kappa1_flat(results_by_d, b_frozen=b_frozen)
 
     def test_not_flat_when_gap(self) -> None:
+        """κ=1 not flat when P(c≤B) drops at d=200."""
+        b_frozen = 10.0
         results_by_d = {
-            0: [_make_result(d=0, kappa=1.0, pr_restore=0.9)],
-            200: [_make_result(d=200, kappa=1.0, pr_restore=0.5)],
+            0: [_make_result(d=0, kappa=1.0, c_episodes=5.0)],
+            200: [_make_result(d=200, kappa=1.0, c_episodes=50.0)],
         }
-        assert not check_kappa1_flat(results_by_d)
+        assert not check_kappa1_flat(results_by_d, b_frozen=b_frozen)
+
+    def test_kappa1_flat_uses_p_c_leq_b(self) -> None:
+        """P0-4: κ=1 flat uses P(c≤B), same definition as G-D."""
+        b_frozen = 10.0
+        results_by_d = {
+            0: [_make_result(d=0, kappa=1.0, pr_restore=0.9, c_episodes=5.0)],
+            200: [_make_result(d=200, kappa=1.0, pr_restore=0.4, c_episodes=7.0)],
+        }
+        flat = check_kappa1_flat(results_by_d, b_frozen=b_frozen)
+        assert flat
 
 
 class TestFreezeB:
@@ -229,50 +276,55 @@ class TestCensorRate:
 
 class TestFailLadder:
     def test_proceed_when_gd_holds_and_flat(self) -> None:
+        """G-D holds at all tested κ + κ=1 flat → proceed."""
+        b_frozen = 10.0
         results_by_d = {
             0: [
-                _make_result(d=0, kappa=0.25, pr_restore=0.9),
-                _make_result(d=0, kappa=0.50, pr_restore=0.9),
-                _make_result(d=0, kappa=1.0, pr_restore=0.8),
+                _make_result(d=0, kappa=0.25, c_episodes=5.0),
+                _make_result(d=0, kappa=0.50, c_episodes=5.0),
+                _make_result(d=0, kappa=1.0, c_episodes=5.0),
             ],
             200: [
-                _make_result(d=200, kappa=0.25, pr_restore=0.5),
-                _make_result(d=200, kappa=0.50, pr_restore=0.5),
-                _make_result(d=200, kappa=1.0, pr_restore=0.78),
+                _make_result(d=200, kappa=0.25, c_episodes=50.0),
+                _make_result(d=200, kappa=0.50, c_episodes=50.0),
+                _make_result(d=200, kappa=1.0, c_episodes=6.0),
             ],
         }
-        decision = evaluate_fail_ladder(results_by_d)
+        decision = evaluate_fail_ladder(results_by_d, b_frozen=b_frozen)
         assert decision.label == LadderOutcome.PROCEED.value
 
     def test_h2_kill_when_gd_fails(self) -> None:
+        """G-D fails at tested κ → H2 kill."""
+        b_frozen = 10.0
         results_by_d = {
             0: [
-                _make_result(d=0, kappa=0.25, pr_restore=0.8),
-                _make_result(d=0, kappa=0.50, pr_restore=0.8),
-                _make_result(d=0, kappa=1.0, pr_restore=0.8),
+                _make_result(d=0, kappa=0.25, c_episodes=5.0),
+                _make_result(d=0, kappa=0.50, c_episodes=5.0),
+                _make_result(d=0, kappa=1.0, c_episodes=5.0),
             ],
             200: [
-                _make_result(d=200, kappa=0.25, pr_restore=0.7),
-                _make_result(d=200, kappa=0.50, pr_restore=0.7),
-                _make_result(d=200, kappa=1.0, pr_restore=0.78),
+                _make_result(d=200, kappa=0.25, c_episodes=8.0),
+                _make_result(d=200, kappa=0.50, c_episodes=8.0),
+                _make_result(d=200, kappa=1.0, c_episodes=6.0),
             ],
         }
-        decision = evaluate_fail_ladder(results_by_d)
+        decision = evaluate_fail_ladder(results_by_d, b_frozen=b_frozen)
         assert decision.label == LadderOutcome.H2_KILL.value
 
     def test_harmfulness_when_flat_and_s_negative(self) -> None:
         """Rung-3 only fires when G-D fails (H2 flat/kill) AND S<0 in
         withheld-era — NOT when G-D holds."""
+        b_frozen = 10.0
         results_by_d = {
             0: [
-                _make_result(d=0, kappa=0.25, pr_restore=0.8),
-                _make_result(d=0, kappa=0.50, pr_restore=0.8),
-                _make_result(d=0, kappa=1.0, pr_restore=0.8),
+                _make_result(d=0, kappa=0.25, c_episodes=5.0),
+                _make_result(d=0, kappa=0.50, c_episodes=5.0),
+                _make_result(d=0, kappa=1.0, c_episodes=5.0),
             ],
             200: [
-                _make_result(d=200, kappa=0.25, pr_restore=0.7),
-                _make_result(d=200, kappa=0.50, pr_restore=0.7),
-                _make_result(d=200, kappa=1.0, pr_restore=0.78),
+                _make_result(d=200, kappa=0.25, c_episodes=8.0),
+                _make_result(d=200, kappa=0.50, c_episodes=8.0),
+                _make_result(d=200, kappa=1.0, c_episodes=6.0),
             ],
         }
         s_negative = [SMetric(
@@ -280,21 +332,43 @@ class TestFailLadder:
             pr_store=0.3, pr_never=0.6, s_value=-0.3, b_frozen=10.0,
             in_withheld_era=True,
         )]
-        decision = evaluate_fail_ladder(results_by_d, s_metrics=s_negative)
+        decision = evaluate_fail_ladder(results_by_d, b_frozen=b_frozen, s_metrics=s_negative)
         assert decision.label == LadderOutcome.HARMFULNESS.value
 
     def test_harness_bug_when_kappa1_rises(self) -> None:
+        """P(c≤B) at κ=1 rises from d=0 to d=200 → harness bug."""
+        b_frozen = 10.0
         results_by_d = {
             0: [
-                _make_result(d=0, kappa=0.25, pr_restore=0.9),
-                _make_result(d=0, kappa=0.50, pr_restore=0.9),
-                _make_result(d=0, kappa=1.0, pr_restore=0.5),
+                _make_result(d=0, kappa=0.25, c_episodes=5.0),
+                _make_result(d=0, kappa=0.50, c_episodes=5.0),
+                _make_result(d=0, kappa=1.0, c_episodes=50.0),
             ],
             200: [
-                _make_result(d=200, kappa=0.25, pr_restore=0.5),
-                _make_result(d=200, kappa=0.50, pr_restore=0.5),
-                _make_result(d=200, kappa=1.0, pr_restore=0.8),
+                _make_result(d=200, kappa=0.25, c_episodes=50.0),
+                _make_result(d=200, kappa=0.50, c_episodes=50.0),
+                _make_result(d=200, kappa=1.0, c_episodes=5.0),
             ],
         }
-        decision = evaluate_fail_ladder(results_by_d)
+        decision = evaluate_fail_ladder(results_by_d, b_frozen=b_frozen)
         assert decision.label == LadderOutcome.HARNESS_BUG.value
+
+    def test_no_partial_proceed(self) -> None:
+        """P0-4: partial proceed removed. If G-D holds at some κ but not all,
+        result is H2 kill (not proceed)."""
+        b_frozen = 10.0
+        results_by_d = {
+            0: [
+                _make_result(d=0, kappa=0.25, c_episodes=5.0),
+                _make_result(d=0, kappa=0.50, c_episodes=5.0),
+                _make_result(d=0, kappa=1.0, c_episodes=5.0),
+            ],
+            200: [
+                _make_result(d=200, kappa=0.25, c_episodes=50.0),
+                _make_result(d=200, kappa=0.50, c_episodes=8.0),
+                _make_result(d=200, kappa=1.0, c_episodes=6.0),
+            ],
+        }
+        decision = evaluate_fail_ladder(results_by_d, b_frozen=b_frozen)
+        assert decision.label != LadderOutcome.PROCEED.value
+        assert decision.label == LadderOutcome.H2_KILL.value

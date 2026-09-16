@@ -5,6 +5,8 @@ Seed pattern inherited from NicheMem: env 1000+seed, policy 50000+seed*97.
 
 from __future__ import annotations
 
+import math
+
 from fork1.grid import GridConfig, run_single_cell
 from fork1.oracle import ModelAdapterStub
 from fork1.schedule import ArmType
@@ -48,13 +50,19 @@ def check_determinism(
             config=config,
             adapter=adapter,
         )
+        ref_nan = math.isnan(reference.pre_dormancy_mean)
+        res_nan = math.isnan(result.pre_dormancy_mean)
+        pre_mean_mismatch = (
+            ref_nan != res_nan
+            or (not ref_nan and result.pre_dormancy_mean != reference.pre_dormancy_mean)
+        )
         if (
             result.pr_restore != reference.pr_restore
             or result.c_episodes != reference.c_episodes
             or result.censored != reference.censored
             or result.n_probes != reference.n_probes
             or result.n_successes != reference.n_successes
-            or result.pre_dormancy_mean != reference.pre_dormancy_mean
+            or pre_mean_mismatch
         ):
             return False, i
 

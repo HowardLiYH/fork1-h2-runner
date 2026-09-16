@@ -1,10 +1,12 @@
 """Metrics: G-D checker (primary), c(d) secondary, S harmfulness (rung-3).
 
 Spec references:
-- Primary G-D: Pr(d=200) ≤ Pr(d=0) − 0.25 at κ∈{0.25,0.50}; κ=1 flat
+- Primary G-D: P(c≤B) at d=200 ≤ P(c≤B) at d=0 − 0.25 at κ∈{0.25,0.50};
+  κ=1 flat under the same Pr definition.
+- Probe-window mean (pr_restore) is DIAGNOSTIC ONLY — never the kill decision.
 - Secondary c(d): episodes to recover within ε=0.05 of pre-dormancy mean;
   censored=max; per-cell censor rate
-- S = Pr[restore within B|store] − Pr[restore within B|never-learned];
+- S = P(c ≤ B | store) − P(c ≤ B | never-learned);
   B = 0.5 * c_never, frozen once
 """
 
@@ -42,17 +44,25 @@ class CellResult:
 
 @dataclasses.dataclass
 class GDResult:
-    """Result of the G-D check for one κ value."""
+    """Result of the G-D check for one κ value.
+
+    pr_d0 / pr_d200 are P(c ≤ B) — the fraction of busy-arm runs whose
+    recovery cost c_episodes is within the frozen budget B.
+    probe_mean_d0 / probe_mean_d200 are the probe-window mean success
+    rates, retained as DIAGNOSTIC fields only.
+    """
     kappa: float
     pr_d0: float
     pr_d200: float
     gap: float
     gd_holds: bool
+    probe_mean_d0: float = 0.0
+    probe_mean_d200: float = 0.0
 
 
 @dataclasses.dataclass
 class SMetric:
-    """S = Pr[restore within B|store] − Pr[restore within B|never-learned]."""
+    """S = P(c ≤ B | store) − P(c ≤ B | never-learned)."""
     family: str
     d: int
     kappa: float
@@ -75,7 +85,10 @@ def compute_pr_restore(
     outcomes: list[bool],
     n_probes: int,
 ) -> float:
-    """Restoration probability: fraction of probe successes."""
+    """Restoration probability: fraction of probe successes.
+
+    DIAGNOSTIC ONLY — not used for G-D or κ=1 flat kill decisions.
+    """
     if n_probes == 0:
         return 0.0
     return sum(outcomes) / n_probes
@@ -113,6 +126,37 @@ def compute_c_episodes(
     return float(max_episodes), True
 
 
+def compute_c_never_cold_start(
+    probe_outcomes: list[bool],
+    w: int = PROBE_WINDOW_W,
+    max_episodes: int | None = None,
+) -> tuple[float, bool]:
+    """Cold-start acquisition cost for never-learned arms.
+
+    Count probe attempts until *w* consecutive successful probes (each
+    True ≥ τ=θ=0.80 is trivially satisfied for binary True).  This
+    replaces the old recovery-vs-pre-dormancy-mean metric for
+    never-learned arms, which was contaminated by pre_dormancy_mean ≈ 0.
+
+    Returns (c, censored).
+    """
+    if max_episodes is None:
+        max_episodes = len(probe_outcomes) if probe_outcomes else 0
+    if not probe_outcomes:
+        return float(max_episodes), True
+
+    consecutive = 0
+    for i, outcome in enumerate(probe_outcomes, 1):
+        if outcome:
+            consecutive += 1
+            if consecutive >= w:
+                return float(i), False
+        else:
+            consecutive = 0
+
+    return float(max_episodes), True
+
+
 def evaluate_cell(
     probe_outcomes: list[bool],
     pre_dormancy_outcomes: list[bool],
@@ -124,14 +168,28 @@ def evaluate_cell(
     seed: int,
     max_episodes: int,
 ) -> CellResult:
-    """Evaluate all metrics for a single cell."""
+    """Evaluate all metrics for a single cell.
+
+    Never-learned arms use cold-start c (consecutive-success acquisition
+    cost).  Arms with a pre-dormancy active block (busy, idle, deletion)
+    use ε-recovery vs pre-dormancy mean.  pre_dormancy_mean is NaN for
+    never-learned (N/A — no active block by design).
+    """
     n_probes = len(probe_outcomes)
     n_successes = sum(probe_outcomes)
     pr_restore = compute_pr_restore(probe_outcomes, n_probes)
-    pre_mean = compute_pre_dormancy_mean(pre_dormancy_outcomes)
-    c_eps, censored = compute_c_episodes(
-        post_dormancy_outcomes, pre_mean, max_episodes
-    )
+
+    if arm_type == ArmType.NEVER_LEARNED:
+        pre_mean = float("nan")
+        c_eps, censored = compute_c_never_cold_start(
+            probe_outcomes, w=PROBE_WINDOW_W, max_episodes=max_episodes,
+        )
+    else:
+        pre_mean = compute_pre_dormancy_mean(pre_dormancy_outcomes)
+        c_eps, censored = compute_c_episodes(
+            post_dormancy_outcomes, pre_mean, max_episodes,
+        )
+
     return CellResult(
         family=family,
         arm_type=arm_type,
@@ -151,37 +209,52 @@ def evaluate_cell(
 def check_gd(
     results_by_d: dict[int, list[CellResult]],
     kappa: float,
+    b_frozen: float,
 ) -> GDResult:
-    """G-D check: Pr(d=200) ≤ Pr(d=0) − 0.25 at the given κ.
+    """G-D check: P(c≤B|d=200) ≤ P(c≤B|d=0) − 0.25 at the given κ.
 
-    Uses busy-arm results only.
+    Uses busy-arm results only.  The decision metric is P(c ≤ B) — the
+    fraction of runs whose recovery cost c_episodes is within the frozen
+    budget B.  Probe-window mean is computed alongside as a diagnostic.
     """
-    def mean_pr(d: int) -> float:
-        cells = [r for r in results_by_d.get(d, []) if r.arm_type == ArmType.BUSY]
-        if not cells:
-            return 0.0
-        return sum(r.pr_restore for r in cells) / len(cells)
+    def _busy_cells(d: int) -> list[CellResult]:
+        return [r for r in results_by_d.get(d, []) if r.arm_type == ArmType.BUSY]
 
-    pr_d0 = mean_pr(0)
-    pr_d200 = mean_pr(200)
+    cells_d0 = _busy_cells(0)
+    cells_d200 = _busy_cells(200)
+
+    pr_d0 = compute_p_recovery_within_b(cells_d0, b_frozen)
+    pr_d200 = compute_p_recovery_within_b(cells_d200, b_frozen)
     gap = pr_d0 - pr_d200
     gd_holds = pr_d200 <= pr_d0 - GD_THRESHOLD
+
+    probe_mean_d0 = (
+        (sum(r.pr_restore for r in cells_d0) / len(cells_d0)) if cells_d0 else 0.0
+    )
+    probe_mean_d200 = (
+        (sum(r.pr_restore for r in cells_d200) / len(cells_d200)) if cells_d200 else 0.0
+    )
+
     return GDResult(
         kappa=kappa,
         pr_d0=pr_d0,
         pr_d200=pr_d200,
         gap=gap,
         gd_holds=gd_holds,
+        probe_mean_d0=probe_mean_d0,
+        probe_mean_d200=probe_mean_d200,
     )
 
 
 def check_kappa1_flat(
     results_by_d: dict[int, list[CellResult]],
+    b_frozen: float,
 ) -> bool:
     """Check that κ=1 produces flat restoration (no significant dormancy effect).
 
-    Flat means Pr(d=200) is NOT significantly below Pr(d=0) — i.e., the G-D
-    gap does NOT hold at κ=1. If G-D holds at κ=1, the control fails.
+    Flat means P(c≤B|d=200) is NOT significantly below P(c≤B|d=0) — i.e.,
+    the G-D gap does NOT hold at κ=1 under the same P(c≤B) definition.
+    If G-D holds at κ=1, the control fails.
     """
     kappa1_results: dict[int, list[CellResult]] = {}
     for d, cells in results_by_d.items():
@@ -192,7 +265,7 @@ def check_kappa1_flat(
     if not kappa1_results:
         return False
 
-    gd = check_gd(kappa1_results, kappa=1.0)
+    gd = check_gd(kappa1_results, kappa=1.0, b_frozen=b_frozen)
     return not gd.gd_holds
 
 
@@ -202,7 +275,7 @@ def estimate_c_never(
     """Estimate c_never ONCE from never-learned arm results.
 
     This is the mean c (episodes to criterion) across all never-learned cells.
-    Used to freeze B = 0.5 * c_never for ALL subsequent S, Pr[restore within B],
+    Used to freeze B = 0.5 * c_never for ALL subsequent S, P(c ≤ B),
     and reacquisition budget computations.
     """
     if not never_learned_results:
@@ -241,6 +314,8 @@ def compute_p_recovery_within_b(
     Each CellResult has c_episodes (episodes to recover within ε of
     pre-dormancy mean). This returns the fraction of cells where that
     cost is ≤ the frozen budget B.
+
+    Used for G-D primary, κ=1 flat, and S metric computations.
     """
     if not cell_results:
         return 0.0

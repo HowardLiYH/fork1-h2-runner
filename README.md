@@ -2,10 +2,21 @@
 
 Experiment harness for testing the H2 hypothesis under family-tagged store + κ + LRU memory. Procedural oracles only — no real model results yet.
 
+**Research scaffold:** [docs/H2_Research_Proposal_Scaffold_v1.3.md](docs/H2_Research_Proposal_Scaffold_v1.3.md) (cold-start c_never + Pr := P(c≤B); §6 blank / Stack-hold).
+
 ## Falsifiable Claim (Primary)
 
 > Under family-tagged store + κ + LRU, busy arms fail Stack G-D:
-> Pr(d=200) ≤ Pr(d=0) − 0.25 at κ ∈ {0.25, 0.50} with κ=1 flat → H2 dies.
+> P(c≤B | d=200) ≤ P(c≤B | d=0) − 0.25 at κ ∈ {0.25, 0.50} with κ=1 flat → H2 dies.
+
+## P0 Gate (all four required — GATE HOLD)
+
+| # | Item | Status |
+|---|------|--------|
+| 1 | **Causal probe** — `predict(task, seed, memory\|None)` ; miss ≠ hit; store access moves Pr | ✅ |
+| 2 | **Strip dormancy_decay** — DEBUG-only flag, default off; no baked ∂p/∂d | ✅ |
+| 3 | **Deletion arm clears store** — `delete_family()` before probes; deletion ≠ idle | ✅ |
+| 4 | **G-D := P(c≤B)** on busy with frozen B; κ=1 flat same Pr; probe-mean = diagnostic only; partial proceed removed | ✅ |
 
 ## Frozen Grid
 
@@ -25,18 +36,23 @@ Experiment harness for testing the H2 hypothesis under family-tagged store + κ 
 
 - **θ = 0.80** (train-only)
 - **w = 2** (probe window / Stack frozen)
-- **B = 0.5 × c_never** — estimated ONCE from never-learned reference under a frozen pilot ceiling (30 instances × 4 seeds), then locked for all P(c ≤ B), reacquisition budget, and S computations. No per-cell re-fit.
+- **c_never** = cold-start acquisition cost: episodes until w=2 consecutive successful probes on never-learned probe streams. Never-learned has no pre-dormancy block — pre_dormancy_mean is N/A.
+- **B = 0.5 × c_never** — estimated ONCE from pilot cold-start, then locked. No per-cell re-fit.
 - **Pilot sizes**: 30 instances × 4 seeds (locked by Experiment Design)
-- ε = 0.05 absolute (secondary c(d) recovery criterion)
+- ε = 0.05 absolute (secondary c(d) recovery criterion, applies to arms with active blocks only: busy / idle / deletion — NOT never-learned)
 - **Withheld-era partition**: seeds 6, 7 of 8 (frozen before first S measurement; open lab knob for PIT cut dates on real data)
 
 ## Metrics
 
 ### Primary: G-D
 
-Restoration probability `Pr(d)` on busy at κ∈{0.25, 0.50}. Requires κ=1 flat as control.
+**P(c ≤ B)** on busy arms at κ∈{0.25, 0.50}. Requires κ=1 flat as control.
 
-**Kill condition:** Pr(d=200) ≤ Pr(d=0) − 0.25 AND κ=1 flat fails → H2 dies.
+`P(c ≤ B)` = fraction of runs where `c_episodes ≤ b_frozen` (computed by `compute_p_recovery_within_b`).
+
+Probe-window mean success (`pr_restore`) is retained as a **diagnostic field only** — it is never used for the G-D kill decision, κ=1 flat check, or fail ladder.
+
+**Kill condition:** P(c≤B | d=200) ≤ P(c≤B | d=0) − 0.25 at all tested κ AND κ=1 flat → H2 dies.
 
 ### Secondary: c(d) (KM-style)
 
@@ -52,10 +68,12 @@ Where `c` is recovery cost in episodes (from c_episodes). P(c ≤ B) is the frac
 
 ## Fail Ladder
 
-1. G-D holds + κ=1 flat → proceed
-2. G-D fails → H2 kill, bounce Stack
-3. H2 flat/kill AND S<0 under drift (withheld-era only) → harmfulness
-4. rise at κ=1 → harness bug, stop
+1. G-D holds at **all** tested κ + κ=1 flat → **proceed**
+2. G-D fails at any tested κ → **H2 kill**, bounce Stack
+3. H2 flat/kill AND S<0 under drift (withheld-era only) → **harmfulness**
+4. rise at κ=1 → **harness bug**, stop
+
+**Decision rule (P0-4):** PROCEED requires G-D holds at **all** tested κ AND κ=1 flat. "Partial proceed when G-D holds at some κ" has been removed — any failure at a tested κ falls through to the kill path, then rung-3 if applicable.
 
 ## Inheritance Statement
 
@@ -65,6 +83,12 @@ This harness inherits **schedule patterns only** from:
 - **RISP** ([HowardLiYH/RISP](https://github.com/HowardLiYH/RISP)): `label_L1`/`label_L2` causal shift regimes, `RealMarket.schedule()` dormancy between regime blocks, `StitchedMarket` stitching, walk-forward / withheld-era / honest-null discipline.
 
 **NicheMem and RISP results are NOT H2 evidence.** Their policies (`compete→pin`, `Γ̂`) and result JSONs are not copied. Only harness/schedule structure is inherited.
+
+## `PILOT_B_CONTAMINATION_RISK`
+
+Under procedural oracles, cold-start c_never is small (~2-3 episodes) because base_success is high (0.80-0.85). This yields a small B (~1-1.5 episodes), which can make P(c ≤ B) uninformative (uniformly 0 for busy arms whose recovery takes more than 1-2 episodes). With real open-weight models, c_never and B will differ substantially. **Do not treat the procedural-oracle B as calibrated. Do not use dry-run P(c ≤ B) values as Stack-countable evidence.**
+
+The κ-divergence mechanism is verified through **probe hit rate** (diagnostic_probe_mean), which diverges across κ in the dry-run because higher κ retains target-family entries through skill-based eviction protection.
 
 ## Out of v1
 
@@ -105,20 +129,24 @@ pytest tests/ -v
 ```
 src/fork1/
 ├── __init__.py          # Version
-├── memory.py            # Family-tagged store + κ + LRU
+├── memory.py            # Family-tagged store + κ + LRU + delete_family
 ├── schedule.py          # Schedule, arms, families, busy≠reuse invariant
-├── oracle.py            # Procedural playbook oracles + model adapter stub
-├── metrics.py           # G-D checker, c(d) secondary, S metric, frozen B
-├── fail_ladder.py       # 4-step fail ladder
-├── grid.py              # Frozen grid runner
+├── oracle.py            # Procedural oracles + causal memory param + model adapter stub
+├── metrics.py           # G-D checker (P(c≤B)), c(d) secondary, S metric, frozen B
+├── fail_ladder.py       # 4-step fail ladder (no partial proceed)
+├── grid.py              # Frozen grid runner (memory wired to probes, deletion clears store)
 ├── determinism.py       # 100/100 determinism harness
 └── cli.py               # CLI entry point (dry-run / full / determinism)
 
 tests/
-├── test_memory.py       # Store, eviction, κ weighting
+├── test_memory.py       # Store, eviction, κ weighting, delete_family
 ├── test_schedule.py     # Arm types, busy≠reuse invariant
-├── test_oracle.py       # Deterministic hash, playbook oracles
-├── test_metrics.py      # G-D, c(d), S, fail ladder, censor rate
+├── test_oracle.py       # Deterministic hash, playbook oracles, causal memory, dormancy_decay off
+├── test_metrics.py      # G-D (P(c≤B)), c(d), S, fail ladder, censor rate
 ├── test_determinism.py  # 100/100 identical traces
-└── test_cli.py          # JSON output structure, B=0.5×c_never
+├── test_regressions.py  # P0-1 through P0-4 regression tests + SF1/SF2 + Fix3/Fix4
+└── test_cli.py          # JSON output structure, B=0.5×c_never, gd_metric=P(c<=B)
+
+results/
+└── dry_run.json         # SMOKE / HARNESS ONLY — not Stack-countable
 ```

@@ -23,9 +23,12 @@ class TestCLI:
         assert "s_metrics" in data
         assert "censor_rates" in data
         assert "fail_ladder" in data
-        assert "pr_restore" in data
+        assert "pr_restore_diagnostic" in data
         assert "c_episodes" in data
-        assert data["c_never_source"] == "pilot"
+        assert data["c_never_source"] == "pilot_cold_start"
+        assert data["gd_metric"] == "P(c<=B)"
+        assert "status_note" in data
+        assert "PILOT_B_CONTAMINATION_RISK" in data
 
     def test_dry_run_output_file(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
@@ -71,6 +74,21 @@ class TestCLI:
         b_frozen = data["b_frozen"]
         for s in data["s_metrics"]:
             assert abs(s["b_frozen"] - b_frozen) < 0.01
+
+    def test_dry_run_gd_metric_is_p_c_leq_b(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """P0-4: primary_gd entries report metric=P(c<=B)."""
+        main(["--dry-run"])
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert data["gd_metric"] == "P(c<=B)"
+        for key, gd in data["primary_gd"].items():
+            assert gd["metric"] == "P(c<=B)"
+            assert "p_c_leq_b_d0" in gd
+            assert "p_c_leq_b_d200" in gd
+            assert "diagnostic_probe_mean_d0" in gd
+            assert "diagnostic_probe_mean_d200" in gd
 
     def test_determinism_check(self, capsys: pytest.CaptureFixture[str]) -> None:
         main(["--determinism-check"])

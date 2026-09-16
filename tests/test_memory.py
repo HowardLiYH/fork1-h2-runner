@@ -25,8 +25,20 @@ class TestFamilyTaggedStore:
         assert evicted is not None
         assert store.size == 3
 
-    def test_lru_eviction_order(self) -> None:
+    def test_high_kappa_evicts_lowest_skill(self) -> None:
+        """At κ=1.0, eviction is skill-based: lowest-skill entry evicted."""
         store = FamilyTaggedStore(capacity=3, kappa=1.0)
+        store.store("earnings", skill=0.8, fidelity=0.9, episode=1)
+        store.store("crisis", skill=0.7, fidelity=0.8, episode=2)
+        store.store("filings", skill=0.6, fidelity=0.7, episode=3)
+        store.access("earnings", episode=4)
+        evicted = store.store("new_fam", skill=0.5, fidelity=0.5, episode=5)
+        assert evicted is not None
+        assert evicted.family == "filings"
+
+    def test_low_kappa_evicts_oldest(self) -> None:
+        """At very low κ, eviction is position-based: oldest entry evicted."""
+        store = FamilyTaggedStore(capacity=3, kappa=0.01)
         store.store("earnings", skill=0.8, fidelity=0.9, episode=1)
         store.store("crisis", skill=0.7, fidelity=0.8, episode=2)
         store.store("filings", skill=0.6, fidelity=0.7, episode=3)
@@ -35,17 +47,20 @@ class TestFamilyTaggedStore:
         assert evicted is not None
         assert evicted.family == "crisis"
 
-    def test_kappa_affects_eviction(self) -> None:
+    def test_kappa_affects_which_entry_evicted(self) -> None:
+        """P1: different κ must evict different entries under same state."""
         store_high = FamilyTaggedStore(capacity=3, kappa=1.0)
-        store_low = FamilyTaggedStore(capacity=3, kappa=0.25)
+        store_low = FamilyTaggedStore(capacity=3, kappa=0.01)
         for s in [store_high, store_low]:
             s.store("a", skill=0.1, fidelity=0.1, episode=1)
             s.store("b", skill=0.9, fidelity=0.9, episode=2)
             s.store("c", skill=0.5, fidelity=0.5, episode=3)
-        store_high.store("d", skill=0.5, fidelity=0.5, episode=4)
-        store_low.store("d", skill=0.5, fidelity=0.5, episode=4)
-        assert store_high.size == 3
-        assert store_low.size == 3
+            s.access("a", episode=4)
+        evicted_high = store_high.store("d", skill=0.5, fidelity=0.5, episode=5)
+        evicted_low = store_low.store("d", skill=0.5, fidelity=0.5, episode=5)
+        assert evicted_high is not None and evicted_low is not None
+        assert evicted_high.family == "a", "κ=1 should evict lowest-skill (a)"
+        assert evicted_low.family == "b", "κ→0 should evict oldest-position (b)"
 
     def test_families_present(self) -> None:
         store = FamilyTaggedStore(capacity=10, kappa=0.5)

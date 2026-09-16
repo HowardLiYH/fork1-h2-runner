@@ -9,19 +9,26 @@ from __future__ import annotations
 
 import hashlib
 import struct
-from typing import Protocol
+from typing import Optional, Protocol
 
+from fork1.memory import MemoryEntry
 from fork1.schedule import ArmType, Task
+
+MEMORY_HIT_BONUS = 0.12
 
 
 class Oracle(Protocol):
     """Protocol for task success oracles."""
 
-    def success(self, task: Task, seed: int) -> float:
+    def success(
+        self, task: Task, seed: int, memory: Optional[MemoryEntry] = None
+    ) -> float:
         """Return success probability ∈ [0, 1] for this task."""
         ...
 
-    def predict(self, task: Task, seed: int) -> bool:
+    def predict(
+        self, task: Task, seed: int, memory: Optional[MemoryEntry] = None
+    ) -> bool:
         """Return deterministic binary outcome for this task."""
         ...
 
@@ -45,9 +52,14 @@ class PlaybookOracle:
         Baseline success rate during active (non-dormant) episodes.
     dormancy_decay : float
         Per-episode decay in success probability during dormancy.
-        At dormancy d, effective success = base_success * (1 - dormancy_decay)^d.
+        Only applied when debug_dormancy_decay=True (DEBUG flag, off by
+        default).  Baking ∂p/∂d into the oracle fakes dormancy effects
+        that should come from the memory mechanism, so production runs
+        MUST leave this off.
     drift_penalty : float
         Additive penalty when the task is marked as drifted.
+    debug_dormancy_decay : bool
+        When True, apply dormancy_decay.  Default False — P0-2.
     """
 
     def __init__(
@@ -56,22 +68,30 @@ class PlaybookOracle:
         base_success: float = 0.85,
         dormancy_decay: float = 0.003,
         drift_penalty: float = 0.10,
+        debug_dormancy_decay: bool = False,
     ) -> None:
         self.family = family
         self.base_success = base_success
         self.dormancy_decay = dormancy_decay
         self.drift_penalty = drift_penalty
+        self._debug_dormancy_decay = debug_dormancy_decay
 
-    def success(self, task: Task, seed: int) -> float:
+    def success(
+        self, task: Task, seed: int, memory: Optional[MemoryEntry] = None
+    ) -> float:
         p = self.base_success
-        if task.dormancy > 0:
+        if self._debug_dormancy_decay and task.dormancy > 0:
             p *= (1 - self.dormancy_decay) ** task.dormancy
         if task.drifted:
             p = max(0.0, p - self.drift_penalty)
+        if memory is not None:
+            p = min(1.0, p + MEMORY_HIT_BONUS * memory.skill)
         return p
 
-    def predict(self, task: Task, seed: int) -> bool:
-        p = self.success(task, seed)
+    def predict(
+        self, task: Task, seed: int, memory: Optional[MemoryEntry] = None
+    ) -> bool:
+        p = self.success(task, seed, memory)
         h = _deterministic_hash(task.family, task.episode, seed)
         return h < p
 
@@ -82,18 +102,21 @@ FAMILY_ORACLES: dict[str, PlaybookOracle] = {
         base_success=0.85,
         dormancy_decay=0.004,
         drift_penalty=0.10,
+        debug_dormancy_decay=False,
     ),
     "crisis": PlaybookOracle(
         family="crisis",
         base_success=0.80,
         dormancy_decay=0.005,
         drift_penalty=0.12,
+        debug_dormancy_decay=False,
     ),
     "filings": PlaybookOracle(
         family="filings",
         base_success=0.82,
         dormancy_decay=0.003,
         drift_penalty=0.08,
+        debug_dormancy_decay=False,
     ),
 }
 
@@ -108,14 +131,18 @@ class ModelAdapterStub:
     def __init__(self, oracles: dict[str, PlaybookOracle] | None = None) -> None:
         self.oracles = oracles or FAMILY_ORACLES
 
-    def success(self, task: Task, seed: int) -> float:
+    def success(
+        self, task: Task, seed: int, memory: Optional[MemoryEntry] = None
+    ) -> float:
         oracle = self.oracles.get(task.family)
         if oracle is None:
             raise ValueError(f"No oracle for family {task.family!r}")
-        return oracle.success(task, seed)
+        return oracle.success(task, seed, memory)
 
-    def predict(self, task: Task, seed: int) -> bool:
+    def predict(
+        self, task: Task, seed: int, memory: Optional[MemoryEntry] = None
+    ) -> bool:
         oracle = self.oracles.get(task.family)
         if oracle is None:
             raise ValueError(f"No oracle for family {task.family!r}")
-        return oracle.predict(task, seed)
+        return oracle.predict(task, seed, memory)

@@ -21,10 +21,10 @@ from fork1.metrics import (
     check_gd,
     check_kappa1_flat,
     compute_c_episodes,
-    compute_pr_restore,
     compute_p_recovery_within_b,
-    compute_s,
+    compute_pr_restore,
     compute_pre_dormancy_mean,
+    compute_s,
     estimate_c_never,
     evaluate_cell,
     freeze_b,
@@ -96,9 +96,17 @@ def run_single_cell(
     config: GridConfig,
     adapter: ModelAdapterStub,
 ) -> CellResult:
-    """Run a single experimental cell and return its result."""
+    """Run a single experimental cell and return its result.
+
+    Memory is wired into predictions causally (P0-1):
+    - Probe tasks: retrieve memory for the target family; pass the entry
+      (hit) or None (miss) to adapter.predict().
+    - Training / busy-fill tasks: predict with memory=None.
+
+    Deletion arm (P0-3): family entries are cleared from the store before
+    each probe window, so probes always get a memory miss.
+    """
     env_s = _env_seed(seed)
-    policy_s = _policy_seed(seed)
 
     schedule = Schedule(
         families=config.families,
@@ -121,7 +129,16 @@ def run_single_cell(
     probe_outcomes: list[bool] = []
 
     for task in tasks:
-        outcome = adapter.predict(task, env_s)
+        # P0-3: deletion arm clears family entries before probes
+        if arm_type == ArmType.DELETION and task.is_probe and task.family == family:
+            store.delete_family(family)
+
+        # P0-1: look up memory for probe tasks on the target family
+        memory = None
+        if task.family == family and task.is_probe:
+            memory = store.access(family, task.episode)
+
+        outcome = adapter.predict(task, env_s, memory=memory)
 
         if task.family == family:
             if task.dormancy == 0 and not task.is_probe:
@@ -134,7 +151,6 @@ def run_single_cell(
                         episode=task.episode,
                     )
             elif task.is_probe:
-                probe_entry = store.access(family, task.episode)
                 probe_outcomes.append(outcome)
                 post_dormancy_outcomes.append(outcome)
             elif task.dormancy > 0 and not task.is_probe:
@@ -251,16 +267,19 @@ def run_grid(config: Optional[GridConfig] = None) -> GridOutput:
             if matching:
                 kappa_cells[d] = matching
         if kappa_cells:
-            gd = check_gd(kappa_cells, kappa)
+            gd = check_gd(kappa_cells, kappa, b_frozen)
             gd_results[f"kappa_{kappa}"] = {
                 "kappa": gd.kappa,
-                "pr_d0": gd.pr_d0,
-                "pr_d200": gd.pr_d200,
+                "p_c_leq_b_d0": gd.pr_d0,
+                "p_c_leq_b_d200": gd.pr_d200,
                 "gap": gd.gap,
                 "gd_holds": gd.gd_holds,
+                "metric": "P(c<=B)",
+                "diagnostic_probe_mean_d0": round(gd.probe_mean_d0, 4),
+                "diagnostic_probe_mean_d200": round(gd.probe_mean_d200, 4),
             }
 
-    kappa1_flat = check_kappa1_flat(results_by_d)
+    kappa1_flat = check_kappa1_flat(results_by_d, b_frozen)
 
     s_metrics: list[SMetric] = []
     withheld_seeds = set(config.withheld_era_seeds)
@@ -312,6 +331,7 @@ def run_grid(config: Optional[GridConfig] = None) -> GridOutput:
 
     fail_decision = evaluate_fail_ladder(
         results_by_d=results_by_d,
+        b_frozen=b_frozen,
         kappa_values=(0.25, 0.50),
         s_metrics=s_metrics,
     )
@@ -351,7 +371,24 @@ def grid_output_to_json(output: GridOutput) -> dict[str, Any]:
             "in_withheld_era": s.in_withheld_era,
         })
 
+    never_learned_diag: dict[str, Any] = {}
+    for r in output.cell_results:
+        if r.arm_type == ArmType.NEVER_LEARNED:
+            key = f"{r.family}_k{r.kappa}_s{r.seed}"
+            never_learned_diag[key] = {
+                "pre_dormancy_mean": None,
+                "c_episodes_cold_start": round(r.c_episodes, 2),
+                "censored": r.censored,
+                "c_definition": "cold_start_consecutive_w2",
+            }
+
     return {
+        "status_note": (
+            "SMOKE / HARNESS ONLY — P0 in progress. "
+            "Not Stack-countable. Do not cite as H2 evidence. "
+            "B derived from cold-start c_never under procedural oracles "
+            "(PILOT_B_CONTAMINATION_RISK — see README)."
+        ),
         "grid": {
             "dormancy_values": list(output.config.dormancy_values),
             "kappa_values": list(output.config.kappa_values),
@@ -365,10 +402,18 @@ def grid_output_to_json(output: GridOutput) -> dict[str, Any]:
         },
         "withheld_era_seeds": list(output.config.withheld_era_seeds),
         "primary_gd": output.gd_results,
+        "gd_metric": "P(c<=B)",
         "kappa1_flat": output.kappa1_flat,
         "c_never": round(output.c_never, 2),
-        "c_never_source": "pilot",
+        "c_never_source": "pilot_cold_start",
+        "c_never_definition": "episodes until w=2 consecutive successes on never-learned probes",
         "b_frozen": round(output.b_frozen, 2),
+        "PILOT_B_CONTAMINATION_RISK": (
+            "c_never is estimated from procedural oracles with high base_success "
+            "(0.80-0.85). Cold-start acquisition is fast (~2-3 episodes), "
+            "yielding a small B. With real open-weight models, c_never and B "
+            "may differ substantially. Do not treat this B as calibrated."
+        ),
         "s_metrics": s_list,
         "censor_rates": {k: round(v, 4) for k, v in output.censor_rates.items()},
         "fail_ladder": {
@@ -376,6 +421,7 @@ def grid_output_to_json(output: GridOutput) -> dict[str, Any]:
             "label": output.fail_ladder.label,
             "detail": output.fail_ladder.detail,
         },
-        "pr_restore": pr_by_cell,
+        "never_learned_diagnostic": never_learned_diag,
+        "pr_restore_diagnostic": pr_by_cell,
         "c_episodes": c_by_cell,
     }
