@@ -34,9 +34,10 @@ Experiment harness for testing the H2 hypothesis under family-tagged store + κ 
 
 - **θ = 0.80** (train-only)
 - **w = 2** (probe window / Stack frozen)
-- **B = 0.5 × c_never** — estimated ONCE from never-learned reference under a frozen pilot ceiling (30 instances × 4 seeds), then locked for all P(c ≤ B), reacquisition budget, and S computations. No per-cell re-fit.
+- **c_never** = cold-start acquisition cost: episodes until w=2 consecutive successful probes on never-learned probe streams. Never-learned has no pre-dormancy block — pre_dormancy_mean is N/A.
+- **B = 0.5 × c_never** — estimated ONCE from pilot cold-start, then locked. No per-cell re-fit.
 - **Pilot sizes**: 30 instances × 4 seeds (locked by Experiment Design)
-- ε = 0.05 absolute (secondary c(d) recovery criterion)
+- ε = 0.05 absolute (secondary c(d) recovery criterion, applies to arms with active blocks only: busy / idle / deletion — NOT never-learned)
 - **Withheld-era partition**: seeds 6, 7 of 8 (frozen before first S measurement; open lab knob for PIT cut dates on real data)
 
 ## Metrics
@@ -80,6 +81,12 @@ This harness inherits **schedule patterns only** from:
 - **RISP** ([HowardLiYH/RISP](https://github.com/HowardLiYH/RISP)): `label_L1`/`label_L2` causal shift regimes, `RealMarket.schedule()` dormancy between regime blocks, `StitchedMarket` stitching, walk-forward / withheld-era / honest-null discipline.
 
 **NicheMem and RISP results are NOT H2 evidence.** Their policies (`compete→pin`, `Γ̂`) and result JSONs are not copied. Only harness/schedule structure is inherited.
+
+## `PILOT_B_CONTAMINATION_RISK`
+
+Under procedural oracles, cold-start c_never is small (~2-3 episodes) because base_success is high (0.80-0.85). This yields a small B (~1-1.5 episodes), which can make P(c ≤ B) uninformative (uniformly 0 for busy arms whose recovery takes more than 1-2 episodes). With real open-weight models, c_never and B will differ substantially. **Do not treat the procedural-oracle B as calibrated. Do not use dry-run P(c ≤ B) values as Stack-countable evidence.**
+
+The κ-divergence mechanism is verified through **probe hit rate** (diagnostic_probe_mean), which diverges across κ in the dry-run because higher κ retains target-family entries through skill-based eviction protection.
 
 ## Out of v1
 

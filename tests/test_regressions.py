@@ -257,7 +257,7 @@ class TestFix4_CNeverFromPilot:
         config = GridConfig(n_seeds=1, n_instances=5)
         output = run_grid(config)
         j = grid_output_to_json(output)
-        assert j["c_never_source"] == "pilot"
+        assert j["c_never_source"] == "pilot_cold_start"
         assert j["pilot"]["instances"] == config.pilot_instances
         assert j["pilot"]["seeds"] == config.pilot_seeds
 
@@ -526,3 +526,159 @@ class TestP0_4_GDUsesPcLeqB:
             assert gd["metric"] == "P(c<=B)"
         assert "pr_restore_diagnostic" in j
         assert j["gd_metric"] == "P(c<=B)"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# P1: κ must move retention under busy
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestP1_KappaMovesRetention:
+    """P1: different κ must produce different retention under busy load.
+
+    Metric: probe hit rate (pr_restore) at fixed (family, d, seed) must
+    diverge between κ=0.25 and κ=1.00.  At κ=1.00 (skill-dominant
+    eviction), target-family entries survive busy fill → memory hit →
+    higher pr_restore.  At κ=0.25 (LRU-dominant), target entries are
+    evicted → memory miss → lower pr_restore.
+    """
+
+    def test_kappa_diverges_on_busy_probe_hit_rate(self) -> None:
+        """Busy arm at d=200: κ=1 and κ=0.25 must differ on pr_restore."""
+        from fork1.grid import run_single_cell
+        config = GridConfig(n_seeds=1, n_instances=10)
+        adapter = ModelAdapterStub()
+
+        r_low = run_single_cell(
+            "earnings", ArmType.BUSY, d=200, kappa=0.25,
+            seed=0, config=config, adapter=adapter,
+        )
+        r_high = run_single_cell(
+            "earnings", ArmType.BUSY, d=200, kappa=1.00,
+            seed=0, config=config, adapter=adapter,
+        )
+        assert r_high.pr_restore != r_low.pr_restore, (
+            f"κ=0.25 pr={r_low.pr_restore}, κ=1.0 pr={r_high.pr_restore} — "
+            "must differ (κ is inert = P1 fail)"
+        )
+
+    def test_high_kappa_retains_target_family(self) -> None:
+        """At κ=1.0 under busy d=200, target-family entries survive in the
+        store (skill-based eviction protects high-skill entries)."""
+        store = FamilyTaggedStore(capacity=20, kappa=1.0)
+        for ep in range(10):
+            store.store("target", skill=0.85, fidelity=1.0, episode=ep)
+        for ep in range(10, 60):
+            store.store("filler", skill=0.80, fidelity=1.0, episode=ep)
+        assert store.has_family("target"), (
+            "κ=1.0 should retain target (highest skill) through busy fill"
+        )
+
+    def test_low_kappa_loses_target_family(self) -> None:
+        """At κ=0.25 under busy fill, target-family entries (oldest) are
+        evicted because position dominates skill."""
+        store = FamilyTaggedStore(capacity=20, kappa=0.25)
+        for ep in range(10):
+            store.store("target", skill=0.85, fidelity=1.0, episode=ep)
+        for ep in range(10, 60):
+            store.store("filler", skill=0.80, fidelity=1.0, episode=ep)
+        assert not store.has_family("target"), (
+            "κ=0.25 should evict target (oldest) during busy fill"
+        )
+
+    def test_grid_diagnostic_probe_mean_diverges_across_kappa(self) -> None:
+        """In the grid JSON, diagnostic_probe_mean at d=200 must not be
+        identical across κ values."""
+        config = GridConfig(n_seeds=2, n_instances=10)
+        output = run_grid(config)
+        j = grid_output_to_json(output)
+        probe_means_d200 = set()
+        for key, gd in j["primary_gd"].items():
+            probe_means_d200.add(round(gd["diagnostic_probe_mean_d200"], 4))
+        assert len(probe_means_d200) > 1, (
+            f"All κ have same probe_mean_d200={probe_means_d200} — κ inert"
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Stack alternate c_never: cold-start acquisition cost
+# ══════════════════════════════════════════════════════════════════════════
+
+class TestColdStartCNever:
+    """c_never = cold-start acquisition cost: episodes until w=2
+    consecutive successes on never-learned probes."""
+
+    def test_cold_start_basic(self) -> None:
+        from fork1.metrics import compute_c_never_cold_start
+        outcomes = [True, True, False, True, True]
+        c, censored = compute_c_never_cold_start(outcomes, w=2)
+        assert c == 2.0
+        assert not censored
+
+    def test_cold_start_delayed(self) -> None:
+        from fork1.metrics import compute_c_never_cold_start
+        outcomes = [True, False, False, True, True]
+        c, censored = compute_c_never_cold_start(outcomes, w=2)
+        assert c == 5.0
+        assert not censored
+
+    def test_cold_start_censored(self) -> None:
+        from fork1.metrics import compute_c_never_cold_start
+        outcomes = [True, False, True, False, True]
+        c, censored = compute_c_never_cold_start(outcomes, w=2)
+        assert censored
+        assert c == 5.0
+
+    def test_cold_start_empty(self) -> None:
+        from fork1.metrics import compute_c_never_cold_start
+        c, censored = compute_c_never_cold_start([], w=2, max_episodes=100)
+        assert censored
+        assert c == 100.0
+
+    def test_never_learned_uses_cold_start_in_grid(self) -> None:
+        """Grid never-learned cells must use cold-start c, not recovery c."""
+        config = GridConfig(n_seeds=2, n_instances=10)
+        output = run_grid(config)
+        never = [r for r in output.cell_results
+                 if r.arm_type == ArmType.NEVER_LEARNED]
+        assert len(never) > 0
+        for r in never:
+            assert r.c_episodes <= r.n_probes, (
+                f"Cold-start c ({r.c_episodes}) should be ≤ n_probes ({r.n_probes})"
+            )
+
+    def test_never_learned_pre_dormancy_mean_is_nan(self) -> None:
+        """Never-learned has no active block → pre_dormancy_mean = NaN."""
+        import math
+        config = GridConfig(n_seeds=1, n_instances=5)
+        output = run_grid(config)
+        never = [r for r in output.cell_results
+                 if r.arm_type == ArmType.NEVER_LEARNED]
+        for r in never:
+            assert math.isnan(r.pre_dormancy_mean)
+
+    def test_busy_idle_deletion_use_recovery_c(self) -> None:
+        """Arms with active blocks must still use ε-recovery c, not cold-start."""
+        import math
+        config = GridConfig(n_seeds=1, n_instances=5)
+        output = run_grid(config)
+        for r in output.cell_results:
+            if r.arm_type != ArmType.NEVER_LEARNED:
+                assert not math.isnan(r.pre_dormancy_mean)
+
+    def test_json_c_never_source_is_cold_start(self) -> None:
+        config = GridConfig(n_seeds=1, n_instances=5)
+        output = run_grid(config)
+        j = grid_output_to_json(output)
+        assert j["c_never_source"] == "pilot_cold_start"
+        assert "c_never_definition" in j
+        assert "PILOT_B_CONTAMINATION_RISK" in j
+
+    def test_json_never_learned_diagnostic(self) -> None:
+        config = GridConfig(n_seeds=1, n_instances=5)
+        output = run_grid(config)
+        j = grid_output_to_json(output)
+        diag = j["never_learned_diagnostic"]
+        assert len(diag) > 0
+        for key, entry in diag.items():
+            assert entry["pre_dormancy_mean"] is None
+            assert entry["c_definition"] == "cold_start_consecutive_w2"

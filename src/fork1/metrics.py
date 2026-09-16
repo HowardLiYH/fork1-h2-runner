@@ -126,6 +126,37 @@ def compute_c_episodes(
     return float(max_episodes), True
 
 
+def compute_c_never_cold_start(
+    probe_outcomes: list[bool],
+    w: int = PROBE_WINDOW_W,
+    max_episodes: int | None = None,
+) -> tuple[float, bool]:
+    """Cold-start acquisition cost for never-learned arms.
+
+    Count probe attempts until *w* consecutive successful probes (each
+    True ≥ τ=θ=0.80 is trivially satisfied for binary True).  This
+    replaces the old recovery-vs-pre-dormancy-mean metric for
+    never-learned arms, which was contaminated by pre_dormancy_mean ≈ 0.
+
+    Returns (c, censored).
+    """
+    if max_episodes is None:
+        max_episodes = len(probe_outcomes) if probe_outcomes else 0
+    if not probe_outcomes:
+        return float(max_episodes), True
+
+    consecutive = 0
+    for i, outcome in enumerate(probe_outcomes, 1):
+        if outcome:
+            consecutive += 1
+            if consecutive >= w:
+                return float(i), False
+        else:
+            consecutive = 0
+
+    return float(max_episodes), True
+
+
 def evaluate_cell(
     probe_outcomes: list[bool],
     pre_dormancy_outcomes: list[bool],
@@ -137,14 +168,28 @@ def evaluate_cell(
     seed: int,
     max_episodes: int,
 ) -> CellResult:
-    """Evaluate all metrics for a single cell."""
+    """Evaluate all metrics for a single cell.
+
+    Never-learned arms use cold-start c (consecutive-success acquisition
+    cost).  Arms with a pre-dormancy active block (busy, idle, deletion)
+    use ε-recovery vs pre-dormancy mean.  pre_dormancy_mean is NaN for
+    never-learned (N/A — no active block by design).
+    """
     n_probes = len(probe_outcomes)
     n_successes = sum(probe_outcomes)
     pr_restore = compute_pr_restore(probe_outcomes, n_probes)
-    pre_mean = compute_pre_dormancy_mean(pre_dormancy_outcomes)
-    c_eps, censored = compute_c_episodes(
-        post_dormancy_outcomes, pre_mean, max_episodes
-    )
+
+    if arm_type == ArmType.NEVER_LEARNED:
+        pre_mean = float("nan")
+        c_eps, censored = compute_c_never_cold_start(
+            probe_outcomes, w=PROBE_WINDOW_W, max_episodes=max_episodes,
+        )
+    else:
+        pre_mean = compute_pre_dormancy_mean(pre_dormancy_outcomes)
+        c_eps, censored = compute_c_episodes(
+            post_dormancy_outcomes, pre_mean, max_episodes,
+        )
+
     return CellResult(
         family=family,
         arm_type=arm_type,

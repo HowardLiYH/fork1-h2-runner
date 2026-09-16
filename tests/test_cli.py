@@ -25,9 +25,10 @@ class TestCLI:
         assert "fail_ladder" in data
         assert "pr_restore_diagnostic" in data
         assert "c_episodes" in data
-        assert data["c_never_source"] == "pilot"
+        assert data["c_never_source"] == "pilot_cold_start"
         assert data["gd_metric"] == "P(c<=B)"
         assert "status_note" in data
+        assert "PILOT_B_CONTAMINATION_RISK" in data
 
     def test_dry_run_output_file(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:

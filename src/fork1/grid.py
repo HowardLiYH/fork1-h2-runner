@@ -371,10 +371,23 @@ def grid_output_to_json(output: GridOutput) -> dict[str, Any]:
             "in_withheld_era": s.in_withheld_era,
         })
 
+    never_learned_diag: dict[str, Any] = {}
+    for r in output.cell_results:
+        if r.arm_type == ArmType.NEVER_LEARNED:
+            key = f"{r.family}_k{r.kappa}_s{r.seed}"
+            never_learned_diag[key] = {
+                "pre_dormancy_mean": None,
+                "c_episodes_cold_start": round(r.c_episodes, 2),
+                "censored": r.censored,
+                "c_definition": "cold_start_consecutive_w2",
+            }
+
     return {
         "status_note": (
             "SMOKE / HARNESS ONLY — P0 in progress. "
-            "Not Stack-countable. Do not cite as H2 evidence."
+            "Not Stack-countable. Do not cite as H2 evidence. "
+            "B derived from cold-start c_never under procedural oracles "
+            "(PILOT_B_CONTAMINATION_RISK — see README)."
         ),
         "grid": {
             "dormancy_values": list(output.config.dormancy_values),
@@ -392,8 +405,15 @@ def grid_output_to_json(output: GridOutput) -> dict[str, Any]:
         "gd_metric": "P(c<=B)",
         "kappa1_flat": output.kappa1_flat,
         "c_never": round(output.c_never, 2),
-        "c_never_source": "pilot",
+        "c_never_source": "pilot_cold_start",
+        "c_never_definition": "episodes until w=2 consecutive successes on never-learned probes",
         "b_frozen": round(output.b_frozen, 2),
+        "PILOT_B_CONTAMINATION_RISK": (
+            "c_never is estimated from procedural oracles with high base_success "
+            "(0.80-0.85). Cold-start acquisition is fast (~2-3 episodes), "
+            "yielding a small B. With real open-weight models, c_never and B "
+            "may differ substantially. Do not treat this B as calibrated."
+        ),
         "s_metrics": s_list,
         "censor_rates": {k: round(v, 4) for k, v in output.censor_rates.items()},
         "fail_ladder": {
@@ -401,6 +421,7 @@ def grid_output_to_json(output: GridOutput) -> dict[str, Any]:
             "label": output.fail_ladder.label,
             "detail": output.fail_ladder.detail,
         },
+        "never_learned_diagnostic": never_learned_diag,
         "pr_restore_diagnostic": pr_by_cell,
         "c_episodes": c_by_cell,
     }

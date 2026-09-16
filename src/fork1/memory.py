@@ -113,21 +113,36 @@ class FamilyTaggedStore:
         return [e for e in self._store.values() if e.family == family]
 
     def _evict_lru(self) -> MemoryEntry:
-        """Evict using κ-weighted LRU with skill/fidelity tie-break.
+        """Evict using κ-blended priority: skill-retention vs LRU.
 
-        Eviction priority (lowest priority evicted first):
-        1. Least recently accessed (LRU order, weighted by κ)
-        2. Tie-break: lowest skill, then lowest fidelity
+        Each entry's protection score is:
+            κ · skill  +  (1 − κ) · normalized_position
+        where normalized_position ∈ [0, 1], 0 = oldest, 1 = newest.
+
+        At κ = 1: pure skill-based — high-skill entries survive regardless
+            of age, so target-family entries (highest skill) are retained
+            through busy-arm dormancy.
+        At κ → 0: pure LRU — oldest entries evicted first regardless of
+            skill, so target-family entries are lost during busy fill.
+
+        Fidelity breaks ties.
         """
         candidates = list(self._store.items())
+        n = len(candidates)
+        max_rank = max(1, n - 1)
 
-        def eviction_score(item: tuple[str, MemoryEntry]) -> tuple[float, float, float]:
-            _, entry = item
-            recency_rank = list(self._store.keys()).index(item[0])
-            weighted_recency = recency_rank * self.kappa
-            return (weighted_recency, entry.skill, entry.fidelity)
+        min_idx = 0
+        _, e0 = candidates[0]
+        min_score = (self.kappa * e0.skill + (1 - self.kappa) * (0 / max_rank), e0.fidelity)
 
-        victim_key, victim_entry = min(candidates, key=eviction_score)
+        for i in range(1, n):
+            _, entry = candidates[i]
+            score = (self.kappa * entry.skill + (1 - self.kappa) * (i / max_rank), entry.fidelity)
+            if score < min_score:
+                min_score = score
+                min_idx = i
+
+        victim_key, victim_entry = candidates[min_idx]
         del self._store[victim_key]
         return victim_entry
 
