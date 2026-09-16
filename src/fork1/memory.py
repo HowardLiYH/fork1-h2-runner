@@ -131,6 +131,13 @@ class FamilyTaggedStore:
         del self._store[victim_key]
         return victim_entry
 
+    def delete_family(self, family: str) -> int:
+        """Delete all entries for a family. Returns count of deleted entries."""
+        keys = [k for k, e in self._store.items() if e.family == family]
+        for k in keys:
+            del self._store[k]
+        return len(keys)
+
     def clear(self) -> None:
         self._store.clear()
 
