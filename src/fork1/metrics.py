@@ -220,7 +220,11 @@ def compute_pr_within_b(
     b: float,
 ) -> float:
     """Pr[restore within B episodes] — fraction of first B post-dormancy
-    episodes that are successes."""
+    episodes that are successes.
+
+    NOTE: This is a per-episode success rate, NOT the same as P(c ≤ B).
+    For S metric computation, use compute_p_recovery_within_b() instead.
+    """
     b_int = max(1, int(math.ceil(b)))
     truncated = post_dormancy_outcomes[:b_int]
     if not truncated:
@@ -228,20 +232,38 @@ def compute_pr_within_b(
     return sum(truncated) / len(truncated)
 
 
+def compute_p_recovery_within_b(
+    cell_results: list[CellResult],
+    b_frozen: float,
+) -> float:
+    """P(c ≤ B) — fraction of runs where recovery cost c ≤ B.
+
+    Each CellResult has c_episodes (episodes to recover within ε of
+    pre-dormancy mean). This returns the fraction of cells where that
+    cost is ≤ the frozen budget B.
+    """
+    if not cell_results:
+        return 0.0
+    n_within = sum(1 for r in cell_results if r.c_episodes <= b_frozen)
+    return n_within / len(cell_results)
+
+
 def compute_s(
-    store_post_outcomes: list[bool],
-    never_post_outcomes: list[bool],
+    store_results: list[CellResult],
+    never_results: list[CellResult],
     b_frozen: float,
     family: str,
     d: int,
     kappa: float,
+    in_withheld_era: bool = False,
 ) -> SMetric:
-    """S = Pr[restore within B|store] − Pr[restore within B|never-learned].
+    """S = P(c ≤ B | store) − P(c ≤ B | never-learned).
 
-    Identical probes (same family, d, κ, seed).
+    Each cell has a recovery cost c (c_episodes). P(c ≤ B) is the fraction
+    of runs where c ≤ frozen B. This has the same sign as (c_never − c_store).
     """
-    pr_store = compute_pr_within_b(store_post_outcomes, b_frozen)
-    pr_never = compute_pr_within_b(never_post_outcomes, b_frozen)
+    pr_store = compute_p_recovery_within_b(store_results, b_frozen)
+    pr_never = compute_p_recovery_within_b(never_results, b_frozen)
     return SMetric(
         family=family,
         d=d,
@@ -250,6 +272,7 @@ def compute_s(
         pr_never=pr_never,
         s_value=pr_store - pr_never,
         b_frozen=b_frozen,
+        in_withheld_era=in_withheld_era,
     )
 
 

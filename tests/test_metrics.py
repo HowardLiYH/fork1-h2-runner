@@ -12,6 +12,7 @@ from fork1.metrics import (
     check_gd,
     check_kappa1_flat,
     compute_c_episodes,
+    compute_p_recovery_within_b,
     compute_pr_restore,
     compute_pr_within_b,
     compute_pre_dormancy_mean,
@@ -166,35 +167,47 @@ class TestFreezeB:
 
 class TestSMetric:
     def test_s_positive(self) -> None:
-        s = compute_s(
-            store_post_outcomes=[True] * 8 + [False] * 2,
-            never_post_outcomes=[True] * 4 + [False] * 6,
-            b_frozen=10.0,
-            family="earnings",
-            d=200,
-            kappa=0.5,
-        )
+        store = [
+            _make_result(c_episodes=5.0, seed=0),
+            _make_result(c_episodes=7.0, seed=1),
+        ]
+        never = [
+            _make_result(c_episodes=15.0, seed=0, arm_type=ArmType.NEVER_LEARNED),
+            _make_result(c_episodes=20.0, seed=1, arm_type=ArmType.NEVER_LEARNED),
+        ]
+        s = compute_s(store, never, 10.0, "earnings", 200, 0.5)
         assert s.s_value > 0
         assert s.pr_store > s.pr_never
 
     def test_s_negative(self) -> None:
-        s = compute_s(
-            store_post_outcomes=[True] * 2 + [False] * 8,
-            never_post_outcomes=[True] * 7 + [False] * 3,
-            b_frozen=10.0,
-            family="crisis",
-            d=200,
-            kappa=0.25,
-        )
+        store = [
+            _make_result(c_episodes=20.0, seed=0),
+            _make_result(c_episodes=25.0, seed=1),
+        ]
+        never = [
+            _make_result(c_episodes=3.0, seed=0, arm_type=ArmType.NEVER_LEARNED),
+            _make_result(c_episodes=5.0, seed=1, arm_type=ArmType.NEVER_LEARNED),
+        ]
+        s = compute_s(store, never, 10.0, "crisis", 200, 0.25)
         assert s.s_value < 0
 
     def test_s_sign_matches_cost_form(self) -> None:
-        """S = Pr[within B|store] − Pr[within B|never] should have same sign
-        as c_never − c_store (cost form)."""
-        store_out = [True] * 8 + [False] * 2
-        never_out = [True] * 4 + [False] * 6
-        s = compute_s(store_out, never_out, 10.0, "earnings", 200, 0.5)
+        """S > 0 iff store recovers faster (lower c) → same sign as c_never − c_store."""
+        store = [
+            _make_result(c_episodes=4.0, seed=0),
+            _make_result(c_episodes=6.0, seed=1),
+            _make_result(c_episodes=8.0, seed=2),
+        ]
+        never = [
+            _make_result(c_episodes=12.0, seed=0, arm_type=ArmType.NEVER_LEARNED),
+            _make_result(c_episodes=15.0, seed=1, arm_type=ArmType.NEVER_LEARNED),
+            _make_result(c_episodes=18.0, seed=2, arm_type=ArmType.NEVER_LEARNED),
+        ]
+        s = compute_s(store, never, 10.0, "earnings", 200, 0.5)
         assert s.s_value > 0
+        avg_c_store = sum(r.c_episodes for r in store) / len(store)
+        avg_c_never = sum(r.c_episodes for r in never) / len(never)
+        assert (avg_c_never - avg_c_store) > 0
 
 
 class TestCensorRate:

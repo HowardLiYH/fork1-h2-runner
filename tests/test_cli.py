@@ -51,6 +51,8 @@ class TestCLI:
         assert data["grid"]["families"] == ["earnings", "crisis", "filings"]
         assert data["grid"]["dormancy_values"] == [0, 50, 200]
         assert data["grid"]["kappa_values"] == [0.25, 0.50, 1.00]
+        assert "pilot" in data
+        assert "withheld_era_seeds" in data
 
     def test_dry_run_b_frozen_is_half_c_never(
         self, capsys: pytest.CaptureFixture[str]

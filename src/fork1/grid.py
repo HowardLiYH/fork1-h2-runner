@@ -22,7 +22,7 @@ from fork1.metrics import (
     check_kappa1_flat,
     compute_c_episodes,
     compute_pr_restore,
-    compute_pr_within_b,
+    compute_p_recovery_within_b,
     compute_s,
     compute_pre_dormancy_mean,
     estimate_c_never,
@@ -40,11 +40,15 @@ N_SEEDS = 8
 MEMORY_CAPACITY = 100
 PILOT_INSTANCES = 30
 PILOT_SEEDS = 4
+WITHHELD_ERA_SEEDS = (6, 7)
 
 
 @dataclasses.dataclass
 class GridConfig:
-    """Frozen grid configuration."""
+    """Frozen grid configuration.
+
+    Pilot sizes (30 instances × 4 seeds) are locked by Experiment Design.
+    """
     dormancy_values: tuple[int, ...] = DORMANCY_VALUES
     kappa_values: tuple[float, ...] = KAPPA_VALUES
     families: tuple[str, ...] = FAMILIES
@@ -56,6 +60,7 @@ class GridConfig:
     min_dormancy_before_probe: int = 10
     pilot_instances: int = PILOT_INSTANCES
     pilot_seeds: int = PILOT_SEEDS
+    withheld_era_seeds: tuple[int, ...] = WITHHELD_ERA_SEEDS
 
 
 @dataclasses.dataclass
@@ -258,6 +263,7 @@ def run_grid(config: Optional[GridConfig] = None) -> GridOutput:
     kappa1_flat = check_kappa1_flat(results_by_d)
 
     s_metrics: list[SMetric] = []
+    withheld_seeds = set(config.withheld_era_seeds)
     for family in config.families:
         for kappa in (0.25, 0.50):
             for d in config.dormancy_values:
@@ -276,25 +282,22 @@ def run_grid(config: Optional[GridConfig] = None) -> GridOutput:
                     and abs(r.kappa - kappa) < 1e-9
                 ]
                 if store_cells and never_cells:
-                    store_pr_vals = [
-                        compute_pr_within_b(c.probe_outcomes, b_frozen)
-                        for c in store_cells
-                    ]
-                    never_pr_vals = [
-                        compute_pr_within_b(c.probe_outcomes, b_frozen)
-                        for c in never_cells
-                    ]
-                    avg_store_pr = sum(store_pr_vals) / len(store_pr_vals)
-                    avg_never_pr = sum(never_pr_vals) / len(never_pr_vals)
-                    s_metrics.append(SMetric(
-                        family=family,
-                        d=d,
-                        kappa=kappa,
-                        pr_store=avg_store_pr,
-                        pr_never=avg_never_pr,
-                        s_value=avg_store_pr - avg_never_pr,
-                        b_frozen=b_frozen,
-                    ))
+                    s_all = compute_s(
+                        store_cells, never_cells, b_frozen,
+                        family, d, kappa,
+                        in_withheld_era=False,
+                    )
+                    s_metrics.append(s_all)
+
+                    store_wh = [r for r in store_cells if r.seed in withheld_seeds]
+                    never_wh = [r for r in never_cells if r.seed in withheld_seeds]
+                    if store_wh and never_wh:
+                        s_wh = compute_s(
+                            store_wh, never_wh, b_frozen,
+                            family, d, kappa,
+                            in_withheld_era=True,
+                        )
+                        s_metrics.append(s_wh)
 
     cell_censor_rates: dict[str, float] = {}
     for family in config.families:
@@ -356,6 +359,11 @@ def grid_output_to_json(output: GridOutput) -> dict[str, Any]:
             "n_instances": output.config.n_instances,
             "n_seeds": output.config.n_seeds,
         },
+        "pilot": {
+            "instances": output.config.pilot_instances,
+            "seeds": output.config.pilot_seeds,
+        },
+        "withheld_era_seeds": list(output.config.withheld_era_seeds),
         "primary_gd": output.gd_results,
         "kappa1_flat": output.kappa1_flat,
         "c_never": round(output.c_never, 2),

@@ -24,9 +24,11 @@ Experiment harness for testing the H2 hypothesis under family-tagged store + κ 
 ## Frozen Parameters
 
 - **θ = 0.80** (train-only)
-- **w = 2** (probe window scaling)
-- **B = 0.5 × c_never** — estimated ONCE from never-learned reference, then locked for all Pr[restore within B], reacquisition budget, and S computations. No per-cell re-fit.
+- **w = 2** (probe window / Stack frozen)
+- **B = 0.5 × c_never** — estimated ONCE from never-learned reference under a frozen pilot ceiling (30 instances × 4 seeds), then locked for all P(c ≤ B), reacquisition budget, and S computations. No per-cell re-fit.
+- **Pilot sizes**: 30 instances × 4 seeds (locked by Experiment Design)
 - ε = 0.05 absolute (secondary c(d) recovery criterion)
+- **Withheld-era partition**: seeds 6, 7 of 8 (frozen before first S measurement; open lab knob for PIT cut dates on real data)
 
 ## Metrics
 
@@ -43,16 +45,16 @@ Episodes to recover within ε=0.05 absolute of pre-dormancy family mean success 
 ### Rung 3: S (harmfulness branch only)
 
 ```
-S = Pr[restore within B | family store] − Pr[restore within B | never-learned]
+S = P(c ≤ B | store) − P(c ≤ B | never-learned)
 ```
 
-Under identical probes (same family, d, κ, seed). Cost form has the same sign. Withheld-era / regime-shift partition fixed BEFORE first S measurement.
+Where `c` is recovery cost in episodes (from c_episodes). P(c ≤ B) is the fraction of runs where recovery cost ≤ frozen B. Same sign as (c_never − c_store). Withheld-era / regime-shift partition fixed BEFORE first S measurement. Rung-3 fires ONLY when H2 is flat/kill AND S<0 under drift in the withheld-era partition.
 
 ## Fail Ladder
 
 1. G-D holds + κ=1 flat → proceed
 2. G-D fails → H2 kill, bounce Stack
-3. flat + S<0 under drift → harmfulness
+3. H2 flat/kill AND S<0 under drift (withheld-era only) → harmfulness
 4. rise at κ=1 → harness bug, stop
 
 ## Inheritance Statement
